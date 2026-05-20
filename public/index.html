@@ -1,1 +1,201 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Acceso WiFi</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      padding: 32px;
+      width: 100%;
+      max-width: 400px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+    }
+    h1 { font-size: 20px; margin-bottom: 8px; color: #0f172a; }
+    p.sub { color: #64748b; font-size: 14px; margin-bottom: 24px; }
+    label { display: block; font-size: 13px; color: #334155; margin-bottom: 6px; font-weight: 600; }
+    input {
+      width: 100%;
+      padding: 12px 14px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      font-size: 16px;
+      margin-bottom: 16px;
+    }
+    input:focus { outline: 2px solid #2563eb; border-color: #2563eb; }
+    button {
+      width: 100%;
+      padding: 13px;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled { background: #94a3b8; cursor: not-allowed; }
+    .msg { font-size: 13px; margin-top: 14px; padding: 10px; border-radius: 6px; display: none; }
+    .msg.error { background: #fef2f2; color: #b91c1c; display: block; }
+    .msg.ok { background: #f0fdf4; color: #15803d; display: block; }
+    .hidden { display: none; }
+    .back { background: none; color: #64748b; font-size: 13px; margin-top: 10px; padding: 4px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <!-- PASO 1: pedir email -->
+    <div id="step1">
+      <h1>Conéctate al WiFi</h1>
+      <p class="sub">Ingresa tu correo para recibir un código de acceso.</p>
+      <label for="email">Correo electrónico</label>
+      <input type="email" id="email" placeholder="tucorreo@ejemplo.com" autocomplete="email">
+      <button id="btnSend">Enviar código</button>
+      <div class="msg" id="msg1"></div>
+    </div>
 
+    <!-- PASO 2: pedir código -->
+    <div id="step2" class="hidden">
+      <h1>Verifica tu código</h1>
+      <p class="sub">Revisa tu correo e ingresa el código de 6 dígitos.</p>
+      <label for="code">Código</label>
+      <input type="text" id="code" placeholder="000000" inputmode="numeric" maxlength="6">
+      <button id="btnVerify">Verificar y conectar</button>
+      <button class="back" id="btnBack">← Usar otro correo</button>
+      <div class="msg" id="msg2"></div>
+    </div>
+  </div>
+
+  <!-- Formulario oculto de liberación hacia el FortiGate -->
+  <form id="fgForm" class="hidden" method="POST" action="">
+    <input type="hidden" name="magic" id="fgMagic">
+    <input type="hidden" name="username" id="fgUser">
+    <input type="hidden" name="password" id="fgPass">
+    <input type="hidden" name="4Tredir" id="fgRedir">
+  </form>
+
+  <script>
+    // --- Capturar parámetros que envía el FortiGate ---
+    const params = new URLSearchParams(window.location.search);
+    const fg = {
+      magic:   params.get('magic')   || '',
+      post:    params.get('post')    || '',   // URL de login del FortiGate
+      usermac: params.get('usermac') || '',
+      apmac:   params.get('apmac')   || '',
+      ssid:    params.get('ssid')    || '',
+      redir:   params.get('4Tredir') || params.get('post') || ''
+    };
+
+    const $ = id => document.getElementById(id);
+    let userEmail = '';
+
+    function showMsg(el, text, type) {
+      el.textContent = text;
+      el.className = 'msg ' + type;
+    }
+
+    // --- PASO 1: enviar código ---
+    $('btnSend').addEventListener('click', async () => {
+      const email = $('email').value.trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        showMsg($('msg1'), 'Ingresa un correo válido.', 'error');
+        return;
+      }
+      $('btnSend').disabled = true;
+      $('btnSend').textContent = 'Enviando...';
+      try {
+        const res = await fetch('/api/send-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          userEmail = email;
+          $('step1').classList.add('hidden');
+          $('step2').classList.remove('hidden');
+        } else {
+          showMsg($('msg1'), data.error || 'No se pudo enviar el código.', 'error');
+        }
+      } catch (e) {
+        showMsg($('msg1'), 'Error de conexión. Intenta de nuevo.', 'error');
+      }
+      $('btnSend').disabled = false;
+      $('btnSend').textContent = 'Enviar código';
+    });
+
+    // --- PASO 2: verificar código ---
+    $('btnVerify').addEventListener('click', async () => {
+      const code = $('code').value.trim();
+      if (!/^\d{6}$/.test(code)) {
+        showMsg($('msg2'), 'El código debe tener 6 dígitos.', 'error');
+        return;
+      }
+      $('btnVerify').disabled = true;
+      $('btnVerify').textContent = 'Verificando...';
+      try {
+        const res = await fetch('/api/verify-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: userEmail, code })
+        });
+        const data = await res.json();
+        if (res.ok && data.valid) {
+          showMsg($('msg2'), '¡Acceso concedido! Conectando...', 'ok');
+          liberarFortiGate();
+        } else {
+          showMsg($('msg2'), data.error || 'Código incorrecto o expirado.', 'error');
+          $('btnVerify').disabled = false;
+          $('btnVerify').textContent = 'Verificar y conectar';
+        }
+      } catch (e) {
+        showMsg($('msg2'), 'Error de conexión. Intenta de nuevo.', 'error');
+        $('btnVerify').disabled = false;
+        $('btnVerify').textContent = 'Verificar y conectar';
+      }
+    });
+
+    $('btnBack').addEventListener('click', () => {
+      $('step2').classList.add('hidden');
+      $('step1').classList.remove('hidden');
+      $('code').value = '';
+      $('msg2').className = 'msg';
+    });
+
+    // --- Liberación hacia el FortiGate ---
+    function liberarFortiGate() {
+      // El FortiGate identifica al cliente por su sesión (IP/MAC),
+      // por eso el POST se hace desde el navegador del cliente.
+      const form = $('fgForm');
+      form.action = fg.post;            // URL de login del FortiGate
+      $('fgMagic').value = fg.magic;
+      $('fgUser').value  = userEmail;   // en portal externo suele ir el identificador
+      $('fgPass').value  = userEmail;   // ver nota: confirmar con FortiGate
+      $('fgRedir').value = fg.redir;
+
+      if (fg.post && fg.magic) {
+        form.submit();
+      } else {
+        // Sin parámetros del FortiGate (ej. abriste la página directo)
+        showMsg($('msg2'),
+          'Validado, pero faltan parámetros del FortiGate. Reconéctate al WiFi.',
+          'error');
+        $('btnVerify').disabled = false;
+        $('btnVerify').textContent = 'Verificar y conectar';
+      }
+    }
+  </script>
+</body>
+</html>
